@@ -1,49 +1,131 @@
 <!-- public/index.html -->
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Payment Page</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Razorpay Payment</title>
     <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            font-family: Arial, sans-serif;
+        }
+        .payment-btn {
+            padding: 15px 30px;
+            background-color: #528FF0;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .payment-btn:hover {
+            background-color: #3f7ad8;
+        }
+        #payment-status {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 5px;
+            display: none;
+        }
+        .success { background-color: #4CAF50; color: white; }
+        .error { background-color: #f44336; color: white; }
+        .pending { background-color: #ff9800; color: white; }
+    </style>
 </head>
 <body>
-    <button id="pay-button">Pay ₹500</button>
+    <button class="payment-btn" id="pay-button">Pay ₹1</button>
+    <div id="payment-status"></div>
 
     <script>
-        document.getElementById('pay-button').onclick = async function() {
-            // Create order
-            const response = await fetch('/api/create-order', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ amount: 1 })
-            });
-            
-            const orderData = await response.json();
-            
-            const options = {
-                key: 'rzp_live_9vAHdHkSzcXaEB', // Replace this with your actual key
-                amount: orderData.amount,
-                currency: 'INR',
-                name: 'Your Company',
-                description: 'Test Transaction',
-                order_id: orderData.id,
-                handler: async function (response) {
-                    // Verify payment
-                    const verifyResponse = await fetch('/api/verify-payment', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(response)
-                    });
+        const showStatus = (message, type) => {
+            const statusDiv = document.getElementById('payment-status');
+            statusDiv.textContent = message;
+            statusDiv.className = type;
+            statusDiv.style.display = 'block';
+        };
+
+        const checkPaymentStatus = async (paymentId) => {
+            try {
+                let attempts = 0;
+                const maxAttempts = 10;
+                const interval = setInterval(async () => {
+                    attempts++;
+                    const response = await fetch(`/payment-status/${paymentId}`);
+                    const data = await response.json();
                     
-                    const data = await verifyResponse.json();
                     if (data.status === 'success') {
-                        alert('Payment successful!');
+                        clearInterval(interval);
+                        showStatus('Payment successful!', 'success');
+                    } else if (data.status === 'failed') {
+                        clearInterval(interval);
+                        showStatus('Payment failed!', 'error');
+                    } else if (attempts >= maxAttempts) {
+                        clearInterval(interval);
+                        showStatus('Payment status check timed out', 'error');
                     }
-                }
-            };
-            
-            const rzp = new Razorpay(options);
-            rzp.open();
+                }, 2000); // Check every 2 seconds
+            } catch (error) {
+                console.error('Error checking payment status:', error);
+                showStatus('Error checking payment status', 'error');
+            }
+        };
+
+        document.getElementById('pay-button').onclick = async function() {
+            try {
+                const response = await fetch('/create-order', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                if (!response.ok) throw new Error('Failed to create order');
+
+                const order = await response.json();
+                console.log('Order created:', order);
+
+                const options = {
+                    key: 'rzp_live_9vAHdHkSzcXaEB',
+                    amount: "100",
+                    currency: "INR",
+                    name: "Your Company Name",
+                    description: "Test Transaction",
+                    order_id: order.id,
+                    handler: function (response) {
+                        console.log('Payment response:', response);
+                        showStatus('Checking payment status...', 'pending');
+                        checkPaymentStatus(response.razorpay_payment_id);
+                    },
+                    prefill: {
+                        name: "Test User",
+                        email: "test@example.com",
+                        contact: "9999999999"
+                    },
+                    theme: { color: "#528FF0" },
+                    modal: {
+                        ondismiss: function() {
+                            showStatus('Payment cancelled by user', 'error');
+                        }
+                    }
+                };
+
+                const rzp1 = new Razorpay(options);
+                rzp1.on('payment.failed', function (response) {
+                    console.error('Payment failed:', response.error);
+                    showStatus(`Payment failed: ${response.error.description}`, 'error');
+                });
+
+                rzp1.open();
+            } catch (error) {
+                console.error('Error:', error);
+                showStatus('Something went wrong!', 'error');
+            }
         };
     </script>
 </body>
-</html>
+</html>   
