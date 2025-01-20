@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Razorpay Payment</title>
+</head>
+<body>
+    <button id="pay-button">Pay ₹1</button>
+
+    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+    <script>
+        document.getElementById('pay-button').onclick = function() {
+            var options = {
+                "key": "rzp_live_9vAHdHkSzcXaEB", // Replace with your key
+                "amount": "100", // Amount in paise (100 paise = ₹1)
+                "currency": "INR",
+                "name": "Your Company Name",
+                "description": "Test Payment",
+                "image": "your_logo_url",
+                "order_id": "", // This will be dynamically filled from server
+                "handler": function (response) {
+                    // Handle success
+                    alert('Payment successful! Payment ID: ' + response.razorpay_payment_id);
+                    
+                    // Verify payment on server
+                    fetch('/verify-payment', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            razorpay_payment_id: response.razorpay_payment_id,
+                            razorpay_order_id: response.razorpay_order_id,
+                            razorpay_signature: response.razorpay_signature
+                        })
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if(data.success) {
+                            alert('Payment verified successfully!');
+                        } else {
+                            alert('Payment verification failed!');
+                        }
+                    });
+                },
+                "prefill": {
+                    "name": "",
+                    "email": "",
+                    "contact": ""
+                },
+                "theme": {
+                    "color": "#F37254"
+                }
+            };
+
+            // Create order on server
+            fetch('/create-order', {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                options.order_id = data.order_id;
+                var rzp1 = new Razorpay(options);
+                rzp1.open();
+            });
+        };
+    </script>
+</body>
+</html>

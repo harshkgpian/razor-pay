@@ -1,25 +1,15 @@
-// server.js
 require('dotenv').config();
 const express = require('express');
 const Razorpay = require('razorpay');
-const bodyParser = require('body-parser');
-const cors = require('cors');
 const crypto = require('crypto');
+const bodyParser = require('body-parser');
 const path = require('path');
 
 const app = express();
 
 // Middleware
-app.use(cors());
-// Parse webhook requests as raw buffer
-app.use('/webhook', express.raw({ type: 'application/json' }));
-// Parse regular requests as JSON
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.use(express.static('public'));
-
-// Store payment status (In production, use a database)
-const paymentStatus = new Map();
+app.use(bodyParser.json());
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Initialize Razorpay
 const razorpay = new Razorpay({
@@ -27,119 +17,94 @@ const razorpay = new Razorpay({
     key_secret: process.env.RAZORPAY_KEY_SECRET
 });
 
-// Webhook handler
-app.post('/webhook', (req, res) => {
-    const webhookSecret = process.env.WEBHOOK_SECRET;
-
-    if (!webhookSecret) {
-        console.error('Webhook secret is not configured');
-        return res.status(500).json({ error: 'Webhook secret not configured' });
-    }
-
-    try {
-        // Get razorpay signature from headers
-        const razorpaySignature = req.headers['x-razorpay-signature'];
-
-        if (!razorpaySignature) {
-            console.error('Razorpay signature is missing');
-            return res.status(400).json({ error: 'Signature is missing' });
-        }
-
-        // Parse the raw body
-        const webhookBody = req.body.toString();
-        
-        // Create signature
-        const expectedSignature = crypto
-            .createHmac('sha256', webhookSecret)
-            .update(webhookBody)
-            .digest('hex');
-
-        // Verify signature
-        if (razorpaySignature === expectedSignature) {
-            const payload = JSON.parse(webhookBody);
-            console.log('Webhook verified. Payload:', payload);
-
-            // Handle payment events
-            if (payload.event === 'payment.captured') {
-                const paymentId = payload.payload.payment.entity.id;
-                paymentStatus.set(paymentId, {
-                    status: 'success',
-                    details: payload.payload.payment.entity
-                });
-                console.log(`Payment ${paymentId} successful`);
-            } else if (payload.event === 'payment.failed') {
-                const paymentId = payload.payload.payment.entity.id;
-                paymentStatus.set(paymentId, {
-                    status: 'failed',
-                    details: payload.payload.payment.entity
-                });
-                console.log(`Payment ${paymentId} failed`);
-            }
-
-            res.json({ status: 'ok' });
-        } else {
-            console.error('Webhook signature verification failed');
-            res.status(400).json({ error: 'Invalid signature' });
-        }
-    } catch (error) {
-        console.error('Webhook processing error:', error);
-        res.status(500).json({ error: 'Webhook processing failed' });
-    }
+// Serve the payment page
+app.get('/', (req, res) => {
+    // Pass the public key to the frontend
+    res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// Check payment status
-app.get('/payment-status/:paymentId', (req, res) => {
-    const status = paymentStatus.get(req.params.paymentId);
-    if (status) {
-        res.json(status);
-    } else {
-        res.json({ status: 'pending' });
-    }
+// Endpoint to get public key
+app.get('/get-razorpay-key', (req, res) => {
+    res.json({
+        key: process.env.RAZORPAY_KEY_ID
+    });
 });
 
 // Create order
 app.post('/create-order', async (req, res) => {
     try {
         const options = {
-            amount: 100, // ₹1
+            amount: 100, // amount in paise (100 paise = ₹1)
             currency: 'INR',
-            receipt: 'order_' + Date.now(),
-            payment_capture: 1
+            receipt: 'receipt_' + Date.now()
         };
 
-        console.log('Creating order with options:', options);
         const order = await razorpay.orders.create(options);
-        console.log('Order created:', order);
-        res.json(order);
+        res.json({
+            success: true,
+            order_id: order.id
+        });
     } catch (error) {
-        console.error('Error creating order:', error);
-        res.status(500).json({ error: 'Something went wrong!', details: error.message });
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
     }
 });
 
 // Verify payment
 app.post('/verify-payment', (req, res) => {
-    try {
-        const {
-            razorpay_order_id,
-            razorpay_payment_id,
-            razorpay_signature
-        } = req.body;
+    const {
+        razorpay_payment_id,
+        razorpay_order_id,
+        razorpay_signature
+    } = req.body;
 
-        const sign = `${razorpay_order_id}|${razorpay_payment_id}`;
-        const expectedSign = crypto
-            .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-            .update(sign)
-            .digest('hex');
+    const body = razorpay_order_id + '|' + razorpay_payment_id;
+    const expectedSignature = crypto
+        .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+        .update(body.toString())
+        .digest('hex');
 
-        if (razorpay_signature === expectedSign) {
-            res.json({ status: 'success' });
-        } else {
-            res.status(400).json({ status: 'failure', message: 'Invalid signature' });
+    const isAuthentic = expectedSignature === razorpay_signature;
+
+    if (isAuthentic) {
+        res.json({
+            success: true,
+            message: 'Payment verified successfully'
+        });
+    } else {
+        res.json({
+            success: false,
+            message: 'Payment verification failed'
+        });
+    }
+});
+
+// Webhook endpoint
+app.post('/webhook', (req, res) => {
+    const shasum = crypto.createHmac('sha256', process.env.WEBHOOK_SECRET);
+    shasum.update(JSON.stringify(req.body));
+    const digest = shasum.digest('hex');
+
+    if (digest === req.headers['x-razorpay-signature']) {
+        console.log('Payment successful');
+        const event = req.body.event;
+        
+        // Handle different webhook events
+        switch (event) {
+            case 'payment.captured':
+                // Payment successful
+                break;
+            case 'payment.failed':
+                // Payment failed
+                break;
+            // Add more event handlers as needed
         }
-    } catch (error) {
-        console.error('Verification error:', error);
-        res.status(500).json({ status: 'error', message: error.message });
+
+        res.json({ status: 'ok' });
+    } else {
+        res.status(400).json({ status: 'invalid signature' });
     }
 });
 
@@ -147,8 +112,4 @@ app.post('/verify-payment', (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
-    console.log('Environment variables loaded:');
-    console.log('- RAZORPAY_KEY_ID:', process.env.RAZORPAY_KEY_ID ? 'Set' : 'Not set');
-    console.log('- RAZORPAY_KEY_SECRET:', process.env.RAZORPAY_KEY_SECRET ? 'Set' : 'Not set');
-    console.log('- WEBHOOK_SECRET:', process.env.WEBHOOK_SECRET ? 'Set' : 'Not set');
 });
